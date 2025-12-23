@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import {
@@ -16,6 +16,7 @@ import {
   addEmbeddingModel,
   deleteEmbeddingModel,
   sendChat,
+  createKBUpload,
 } from "./api.js";
 
 const PAGES = [
@@ -28,16 +29,29 @@ const PAGES = [
 export default function App() {
   const [page, setPage] = useState("chat");
   const [conversations, setConversations] = useState([]);
-  const [activeConversation, setActiveConversation] = useState(null);
-  const [messages, setMessages] = useState([]);
+  const [activeConversations, setActiveConversations] = useState({
+    gemini: null,
+    codex: null,
+  });
+  const [messagesByProvider, setMessagesByProvider] = useState({
+    gemini: [],
+    codex: [],
+  });
   const [chatInput, setChatInput] = useState("");
   const [kbs, setKbs] = useState([]);
   const [selectedKBs, setSelectedKBs] = useState([]);
   const [topK, setTopK] = useState(5);
   const [ragMode, setRagMode] = useState("hybrid");
   const [provider, setProvider] = useState("gemini");
-  const [chatStatus, setChatStatus] = useState("");
-  const chatWindowRef = useRef(null);
+  const [dualMode, setDualMode] = useState(false);
+  const [dualComposer, setDualComposer] = useState(false);
+  const [dualInputs, setDualInputs] = useState({ gemini: "", codex: "" });
+  const [chatStatusByProvider, setChatStatusByProvider] = useState({
+    gemini: "",
+    codex: "",
+  });
+  const chatWindowRefs = useRef({ gemini: null, codex: null });
+  const lastLoadedConvo = useRef({ gemini: null, codex: null });
 
   const [kbForm, setKbForm] = useState({
     name: "",
@@ -48,6 +62,7 @@ export default function App() {
     top_k: 5,
   });
   const [kbStatus, setKbStatus] = useState("");
+  const [kbFiles, setKbFiles] = useState([]);
 
   const [embeddingModels, setEmbeddingModels] = useState([]);
   const [modelForm, setModelForm] = useState({ model_id: "", tag: "" });
@@ -60,25 +75,58 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!activeConversation) {
-      setMessages([]);
+    const convo = activeConversations.gemini;
+    if (!convo) {
+      setMessagesByProvider((prev) => ({ ...prev, gemini: [] }));
       return;
     }
-    getMessages(activeConversation.id).then((data) => {
-      setMessages(data.messages || []);
+    getMessages(convo.id).then((data) => {
+      const incoming = data.messages || [];
+      setMessagesByProvider((prev) => {
+        if (
+          lastLoadedConvo.current.gemini === convo.id &&
+          prev.gemini.length > incoming.length
+        ) {
+          return prev;
+        }
+        lastLoadedConvo.current.gemini = convo.id;
+        return { ...prev, gemini: incoming };
+      });
     });
-  }, [activeConversation]);
+  }, [activeConversations.gemini]);
 
   useEffect(() => {
-    if (!chatWindowRef.current) return;
-    chatWindowRef.current.scrollTop = chatWindowRef.current.scrollHeight;
-  }, [messages]);
+    const convo = activeConversations.codex;
+    if (!convo) {
+      setMessagesByProvider((prev) => ({ ...prev, codex: [] }));
+      return;
+    }
+    getMessages(convo.id).then((data) => {
+      const incoming = data.messages || [];
+      setMessagesByProvider((prev) => {
+        if (
+          lastLoadedConvo.current.codex === convo.id &&
+          prev.codex.length > incoming.length
+        ) {
+          return prev;
+        }
+        lastLoadedConvo.current.codex = convo.id;
+        return { ...prev, codex: incoming };
+      });
+    });
+  }, [activeConversations.codex]);
 
-  const kbMap = useMemo(() => {
-    const map = new Map();
-    kbs.forEach((kb) => map.set(kb.name, kb));
-    return map;
-  }, [kbs]);
+  useEffect(() => {
+    const ref = chatWindowRefs.current.gemini;
+    if (!ref) return;
+    ref.scrollTop = ref.scrollHeight;
+  }, [messagesByProvider.gemini]);
+
+  useEffect(() => {
+    const ref = chatWindowRefs.current.codex;
+    if (!ref) return;
+    ref.scrollTop = ref.scrollHeight;
+  }, [messagesByProvider.codex]);
 
   const renderMarkdown = (text) => {
     const html = marked.parse(text || "");
@@ -104,102 +152,165 @@ export default function App() {
   }
 
   async function startNewChat() {
-    const convo = await createConversation(null, provider);
-    setActiveConversation(convo);
+    if (dualMode) {
+      const [geminiConvo, codexConvo] = await Promise.all([
+        createConversation(null, "gemini"),
+        createConversation(null, "codex"),
+      ]);
+      setActiveConversations({ gemini: geminiConvo, codex: codexConvo });
+    } else {
+      const convo = await createConversation(null, provider);
+      setActiveConversations((prev) => ({ ...prev, [provider]: convo }));
+    }
     setPage("chat");
     await refreshConversations();
   }
 
   async function removeConversation(id) {
     await deleteConversation(id);
-    if (activeConversation && activeConversation.id === id) {
-      setActiveConversation(null);
-      setMessages([]);
-    }
+    setActiveConversations((prev) => {
+      const updated = { ...prev };
+      if (updated.gemini && updated.gemini.id === id) {
+        updated.gemini = null;
+      }
+      if (updated.codex && updated.codex.id === id) {
+        updated.codex = null;
+      }
+      return updated;
+    });
     await refreshConversations();
   }
 
-  async function handleSendMessage(event) {
+  async function ensureConversation(providerKey) {
+    const existing = activeConversations[providerKey];
+    if (existing) return existing;
+    const convo = await createConversation(null, providerKey);
+    setActiveConversations((prev) => ({ ...prev, [providerKey]: convo }));
+    return convo;
+  }
+
+  async function handleSendMessage(event, overrideProvider) {
     event.preventDefault();
-    if (!chatInput.trim()) return;
-    setChatStatus("Thinking...");
-
-    let convo = activeConversation;
-    if (!convo) {
-      convo = await createConversation(null, provider);
-      setActiveConversation(convo);
+    const prompt = overrideProvider
+      ? dualInputs[overrideProvider].trim()
+      : chatInput.trim();
+    if (!prompt) return;
+    if (overrideProvider) {
+      setDualInputs((prev) => ({ ...prev, [overrideProvider]: "" }));
+    } else {
+      setChatInput("");
     }
 
-    const newUserMessage = {
-      id: `local-${Date.now()}`,
-      role: "user",
-      content: chatInput.trim(),
-    };
+    const providersToUse = overrideProvider
+      ? [overrideProvider]
+      : dualMode
+        ? ["gemini", "codex"]
+        : [provider];
 
-    setMessages((prev) => [...prev, newUserMessage, { role: "assistant", content: "" }]);
-    setChatInput("");
-
-    let assistantText = "";
-    let assistantSources = null;
-
-    try {
-      await sendChat({
-        conversationId: convo.id,
-        message: newUserMessage.content,
-        kbNames: selectedKBs,
-        topK,
-        ragMode,
-        provider,
-        onToken: (data) => {
-          if (data.type === "delta") {
-            assistantText += data.content || "";
-            setMessages((prev) => {
-              const updated = [...prev];
-              updated[updated.length - 1] = {
-                role: "assistant",
-                content: assistantText,
-                sources: assistantSources,
-              };
-              return updated;
-            });
-          }
-          if (data.type === "done") {
-            assistantSources = data.sources || null;
-            setChatStatus("");
-            setMessages((prev) => {
-              const updated = [...prev];
-              updated[updated.length - 1] = {
-                role: "assistant",
-                content: assistantText,
-                sources: assistantSources,
-              };
-              return updated;
-            });
-            refreshConversations();
-          }
-          if (data.type === "error") {
-            setChatStatus(data.message || "Streaming error");
-          }
-        },
-      });
-    } catch (err) {
-      setChatStatus(err.message || "Chat failed");
-      setMessages((prev) => {
-        const updated = [...prev];
-        updated[updated.length - 1] = {
-          role: "assistant",
-          content: `Error: ${err.message || "Chat failed"}`,
+    await Promise.all(
+      providersToUse.map(async (providerKey) => {
+        setChatStatusByProvider((prev) => ({ ...prev, [providerKey]: "Thinking..." }));
+        const convo = await ensureConversation(providerKey);
+        const newUserMessage = {
+          id: `local-${Date.now()}-${providerKey}`,
+          role: "user",
+          content: prompt,
         };
-        return updated;
-      });
-    }
+
+        setMessagesByProvider((prev) => ({
+          ...prev,
+          [providerKey]: [
+            ...prev[providerKey],
+            newUserMessage,
+            { role: "assistant", content: "" },
+          ],
+        }));
+
+        let assistantText = "";
+        let assistantSources = null;
+
+        try {
+          await sendChat({
+            conversationId: convo.id,
+            message: newUserMessage.content,
+            kbNames: selectedKBs,
+            topK,
+            ragMode,
+            provider: providerKey,
+            onToken: (data) => {
+              if (data.type === "delta") {
+                assistantText += data.content || "";
+                setMessagesByProvider((prev) => {
+                  const updated = [...prev[providerKey]];
+                  updated[updated.length - 1] = {
+                    role: "assistant",
+                    content: assistantText,
+                    sources: assistantSources,
+                  };
+                  return { ...prev, [providerKey]: updated };
+                });
+              }
+              if (data.type === "done") {
+                assistantSources = data.sources || null;
+                setChatStatusByProvider((prev) => ({ ...prev, [providerKey]: "" }));
+                setMessagesByProvider((prev) => {
+                  const updated = [...prev[providerKey]];
+                  updated[updated.length - 1] = {
+                    role: "assistant",
+                    content: assistantText,
+                    sources: assistantSources,
+                  };
+                  return { ...prev, [providerKey]: updated };
+                });
+                refreshConversations();
+              }
+              if (data.type === "error") {
+                setChatStatusByProvider((prev) => ({
+                  ...prev,
+                  [providerKey]: data.message || "Streaming error",
+                }));
+              }
+            },
+          });
+        } catch (err) {
+          setChatStatusByProvider((prev) => ({
+            ...prev,
+            [providerKey]: err.message || "Chat failed",
+          }));
+          setMessagesByProvider((prev) => {
+            const updated = [...prev[providerKey]];
+            updated[updated.length - 1] = {
+              role: "assistant",
+              content: `Error: ${err.message || "Chat failed"}`,
+            };
+            return { ...prev, [providerKey]: updated };
+          });
+        }
+      })
+    );
   }
 
   async function handleCreateKB(event) {
     event.preventDefault();
     setKbStatus("Ingesting...");
     try {
-      const result = await createKB(kbForm);
+      if (!kbFiles.length && !kbForm.source_path.trim()) {
+        setKbStatus("Provide a source path or select a folder.");
+        return;
+      }
+      let result;
+      if (kbFiles.length) {
+        result = await createKBUpload({
+          name: kbForm.name,
+          embeddingModel: kbForm.embedding_model,
+          chunkSize: kbForm.chunk_size,
+          chunkOverlap: kbForm.chunk_overlap,
+          topK: kbForm.top_k,
+          files: kbFiles,
+        });
+      } else {
+        result = await createKB(kbForm);
+      }
       setKbStatus(`Processed ${result.processed_files} files, ${result.chunks} chunks`);
       setKbForm({
         name: "",
@@ -209,6 +320,7 @@ export default function App() {
         chunk_overlap: 100,
         top_k: 5,
       });
+      setKbFiles([]);
       refreshKBs();
     } catch (err) {
       setKbStatus(err.message || "Failed to ingest");
@@ -255,34 +367,64 @@ export default function App() {
             <button className="ghost" onClick={startNewChat}>New Chat</button>
           </div>
           <div className="conversation-list">
-            {conversations.map((convo) => (
-              <div
-                key={convo.id}
-                className={
-                  activeConversation && activeConversation.id === convo.id
-                    ? "conversation-item active"
-                    : "conversation-item"
-                }
-              >
-                <button
-                  className="conversation-link"
-                  onClick={() => {
-                    setActiveConversation(convo);
-                    setProvider(convo.provider || "gemini");
-                    setPage("chat");
-                  }}
-                >
-                  {convo.title || "New chat"}
-                </button>
-                <span className="provider-tag">{(convo.provider || "gemini").toUpperCase()}</span>
-                <button
-                  className="ghost"
-                  onClick={() => removeConversation(convo.id)}
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
+            <div className="conversation-group">
+              <div className="group-title">Gemini</div>
+              {conversations
+                .filter((convo) => (convo.provider || "gemini") === "gemini")
+                .map((convo) => (
+                  <div
+                    key={convo.id}
+                    className={
+                      activeConversations.gemini && activeConversations.gemini.id === convo.id
+                        ? "conversation-item active"
+                        : "conversation-item"
+                    }
+                  >
+                    <button
+                      className="conversation-link"
+                      onClick={() => {
+                        setActiveConversations((prev) => ({ ...prev, gemini: convo }));
+                        setProvider("gemini");
+                        setPage("chat");
+                      }}
+                    >
+                      {convo.title || "New chat"}
+                    </button>
+                    <button className="ghost" onClick={() => removeConversation(convo.id)}>
+                      ✕
+                    </button>
+                  </div>
+                ))}
+            </div>
+            <div className="conversation-group">
+              <div className="group-title">Codex</div>
+              {conversations
+                .filter((convo) => (convo.provider || "gemini") === "codex")
+                .map((convo) => (
+                  <div
+                    key={convo.id}
+                    className={
+                      activeConversations.codex && activeConversations.codex.id === convo.id
+                        ? "conversation-item active"
+                        : "conversation-item"
+                    }
+                  >
+                    <button
+                      className="conversation-link"
+                      onClick={() => {
+                        setActiveConversations((prev) => ({ ...prev, codex: convo }));
+                        setProvider("codex");
+                        setPage("chat");
+                      }}
+                    >
+                      {convo.title || "New chat"}
+                    </button>
+                    <button className="ghost" onClick={() => removeConversation(convo.id)}>
+                      ✕
+                    </button>
+                  </div>
+                ))}
+            </div>
           </div>
         </div>
       </aside>
@@ -315,10 +457,31 @@ export default function App() {
                 </label>
                 <label>
                   Provider
-                  <select value={provider} onChange={(event) => setProvider(event.target.value)}>
+                  <select
+                    value={provider}
+                    onChange={(event) => setProvider(event.target.value)}
+                    disabled={dualMode}
+                  >
                     <option value="codex">Codex</option>
                     <option value="gemini">Gemini</option>
                   </select>
+                </label>
+                <label>
+                  Dual
+                  <input
+                    type="checkbox"
+                    checked={dualMode}
+                    onChange={(event) => setDualMode(event.target.checked)}
+                  />
+                </label>
+                <label>
+                  Dual input
+                  <input
+                    type="checkbox"
+                    checked={dualComposer}
+                    onChange={(event) => setDualComposer(event.target.checked)}
+                    disabled={!dualMode}
+                  />
                 </label>
               </div>
             </header>
@@ -343,49 +506,104 @@ export default function App() {
               ))}
             </div>
 
-            <div className="chat-window" ref={chatWindowRef}>
-              {messages.length === 0 && (
-                <div className="empty">Start a conversation to see messages here.</div>
-              )}
-              {messages.map((msg, index) => (
-                <div key={index} className={`message ${msg.role}`}>
-                  <div className="message-meta">{msg.role === "user" ? "You" : "Codex"}</div>
-                  {msg.role === "assistant" ? (
-                    <div
-                      className="message-text markdown"
-                      dangerouslySetInnerHTML={renderMarkdown(msg.content)}
-                    />
-                  ) : (
-                    <div className="message-text">{msg.content}</div>
-                  )}
-                  {msg.sources && msg.sources.length > 0 && (
-                    <div className="citations">
-                      {msg.sources.slice(0, 5).map((source, idx) => (
-                        <div key={idx} className="citation">
-                          {source.source} · chunk {source.chunk_id}
+            <div className={dualMode ? "chat-split" : ""}>
+              {(dualMode ? ["gemini", "codex"] : [provider]).map((providerKey) => (
+                <div key={providerKey} className="chat-pane">
+                  <div className="pane-header">
+                    <span>{providerKey === "gemini" ? "Gemini" : "Codex"}</span>
+                    {chatStatusByProvider[providerKey] && (
+                      <span className="status live">
+                        <span className="pulse-dot" />
+                        <span className="pulse-text">{chatStatusByProvider[providerKey]}</span>
+                      </span>
+                    )}
+                  </div>
+                  <div
+                    className="chat-window"
+                    ref={(node) => {
+                      chatWindowRefs.current[providerKey] = node;
+                    }}
+                  >
+                    {messagesByProvider[providerKey].length === 0 && (
+                      <div className="empty">Start a conversation to see messages here.</div>
+                    )}
+                    {messagesByProvider[providerKey].map((msg, index) => (
+                      <div key={index} className={`message ${msg.role}`}>
+                        <div className="message-meta">
+                          {msg.role === "user"
+                            ? "You"
+                            : providerKey === "gemini"
+                              ? "Gemini"
+                              : "Codex"}
                         </div>
-                      ))}
-                    </div>
-                  )}
+                        {msg.role === "assistant" ? (
+                          <div
+                            className="message-text markdown"
+                            dangerouslySetInnerHTML={renderMarkdown(msg.content)}
+                          />
+                        ) : (
+                          <div className="message-text">{msg.content}</div>
+                        )}
+                        {msg.sources && msg.sources.length > 0 && (
+                          <div className="citations">
+                            {msg.sources.slice(0, 5).map((source, idx) => (
+                              <div key={idx} className="citation">
+                                {source.source} · chunk {source.chunk_id}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>
 
-            <form className="composer" onSubmit={handleSendMessage}>
-              <textarea
-                value={chatInput}
-                onChange={(event) => setChatInput(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    handleSendMessage(event);
-                  }
-                }}
-                placeholder="Ask about your documents or chat freely..."
-              />
-              <button type="submit">Send</button>
-            </form>
-            {chatStatus && <div className="status">{chatStatus}</div>}
+            {dualMode && dualComposer ? (
+              <div className="dual-composer">
+                {["gemini", "codex"].map((providerKey) => (
+                  <form
+                    key={providerKey}
+                    className="composer"
+                    onSubmit={(event) => handleSendMessage(event, providerKey)}
+                  >
+                    <textarea
+                      value={dualInputs[providerKey]}
+                      onChange={(event) =>
+                        setDualInputs((prev) => ({
+                          ...prev,
+                          [providerKey]: event.target.value,
+                        }))
+                      }
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && !event.shiftKey) {
+                          event.preventDefault();
+                          handleSendMessage(event, providerKey);
+                        }
+                      }}
+                      placeholder={`Ask ${providerKey}...`}
+                    />
+                    <button type="submit">Send</button>
+                  </form>
+                ))}
+              </div>
+            ) : (
+              <form className="composer" onSubmit={handleSendMessage}>
+                <textarea
+                  value={chatInput}
+                  onChange={(event) => setChatInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      handleSendMessage(event);
+                    }
+                  }}
+                  placeholder="Ask about your documents or chat freely..."
+                />
+                <button type="submit">Send</button>
+              </form>
+            )}
           </section>
         )}
 
@@ -483,7 +701,37 @@ export default function App() {
                   value={kbForm.source_path}
                   onChange={(event) => setKbForm({ ...kbForm, source_path: event.target.value })}
                   placeholder="/home/you/docs"
-                  required
+                />
+              </label>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => {
+                  const input = window.prompt(
+                    "Paste a Windows path to convert (e.g. C:\\\\Users\\\\you\\\\Docs)"
+                  );
+                  if (!input) return;
+                  const trimmed = input.trim();
+                  const match = trimmed.match(/^([A-Za-z]):\\\\(.*)$/);
+                  if (!match) {
+                    setKbStatus("Invalid Windows path.");
+                    return;
+                  }
+                  const drive = match[1].toLowerCase();
+                  const rest = match[2].replace(/\\\\/g, "/");
+                  const wslPath = `/mnt/${drive}/${rest}`;
+                  setKbForm((prev) => ({ ...prev, source_path: wslPath }));
+                  setKbStatus(`WSL path: ${wslPath}`);
+                }}
+              >
+                WSL path helper
+              </button>
+              <label>
+                Upload folder
+                <input
+                  type="file"
+                  webkitdirectory="true"
+                  onChange={(event) => setKbFiles(Array.from(event.target.files || []))}
                 />
               </label>
               <label>

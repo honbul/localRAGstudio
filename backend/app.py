@@ -1,9 +1,10 @@
 import os
 import json
 import time
+import shutil
 from typing import List, Dict, Any, Generator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -75,6 +76,17 @@ class EmbeddingCreate(BaseModel):
     tag: str | None = None
 
 
+class FolderPathRequest(BaseModel):
+    path: str
+
+
+def _safe_rel_path(path: str) -> str:
+    normalized = os.path.normpath(path).lstrip(os.sep)
+    if normalized.startswith("..") or os.path.isabs(normalized):
+        return os.path.basename(path)
+    return normalized
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
@@ -107,6 +119,31 @@ def api_list_models():
     return {"models": [model.__dict__ for model in models]}
 
 
+@app.post("/api/folder-path")
+def api_folder_path(req: FolderPathRequest):
+    if not req.path:
+        raise HTTPException(status_code=400, detail="path is required")
+    return {"path": req.path}
+
+
+@app.post("/api/pick-folder")
+def api_pick_folder():
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Tkinter unavailable: {exc}") from exc
+
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    folder = filedialog.askdirectory()
+    root.destroy()
+    if not folder:
+        return {"path": ""}
+    return {"path": os.path.abspath(folder)}
+
+
 @app.post("/api/embeddings/models")
 def api_add_model(req: EmbeddingCreate):
     info = register_model(req.model_id, req.tag)
@@ -136,6 +173,42 @@ def api_create_kb(req: KBCreate):
             req.chunk_size,
             req.chunk_overlap,
             req.top_k,
+        )
+        return result
+    except (ValueError, FileExistsError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/kbs/upload")
+async def api_create_kb_upload(
+    name: str = Form(...),
+    embedding_model: str = Form(...),
+    chunk_size: int = Form(...),
+    chunk_overlap: int = Form(...),
+    top_k: int = Form(...),
+    files: list[UploadFile] = File(...),
+):
+    upload_root = os.path.join(settings.data_dir, "uploads", name)
+    if os.path.exists(upload_root):
+        shutil.rmtree(upload_root)
+    os.makedirs(upload_root, exist_ok=True)
+
+    for upload in files:
+        rel_path = upload.filename or upload.file.name
+        safe_path = _safe_rel_path(rel_path)
+        target_path = os.path.join(upload_root, safe_path)
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        with open(target_path, "wb") as f:
+            f.write(await upload.read())
+
+    try:
+        result = ingest(
+            name,
+            upload_root,
+            embedding_model,
+            chunk_size,
+            chunk_overlap,
+            top_k,
         )
         return result
     except (ValueError, FileExistsError) as exc:

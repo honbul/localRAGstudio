@@ -112,8 +112,22 @@ body {
 .conversation-list {
   display: grid;
   gap: 8px;
-  max-height: 280px;
+  max-height: calc(100vh - 360px);
   overflow-y: auto;
+  padding-right: 4px;
+}
+
+.conversation-group {
+  display: grid;
+  gap: 6px;
+}
+
+.group-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-top: 8px;
 }
 
 .conversation-item {
@@ -146,6 +160,63 @@ body {
   border-radius: 999px;
   border: 1px solid var(--border);
   color: var(--muted);
+}
+
+.chat-split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.chat-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pane-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.status.live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--accent-strong);
+}
+
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  box-shadow: 0 0 0 0 rgba(255, 98, 36, 0.7);
+  animation: pulse 1.4s infinite;
+}
+
+.pulse-text {
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 12px;
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 98, 36, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(255, 98, 36, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 98, 36, 0);
+  }
 }
 
 .main {
@@ -273,6 +344,12 @@ body {
   display: grid;
   grid-template-columns: 1fr 140px;
   gap: 12px;
+}
+
+.dual-composer {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
 }
 
 textarea {

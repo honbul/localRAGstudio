@@ -40,10 +40,31 @@ Open `http://localhost:5173`.
 ## How to use
 
 1) **Embedding Models**: add a model like `sentence-transformers/all-MiniLM-L6-v2`.
-2) **Create KB**: choose a local path or directory, set chunking + top-k.
+2) **Create KB**: choose a local path or upload a folder, set chunking + top-k.
 3) **Chat**: select one or more KBs to ground answers (or chat with none).
 4) **Provider**: choose Codex or Gemini; the provider is saved per conversation.
-5) **Knowledge Bases**: rename, rebuild, or add more documents anytime.
+5) **Dual mode**: enable Dual to chat with both providers side-by-side (separate histories).
+6) **Knowledge Bases**: rename, rebuild, or add more documents anytime.
+
+## Local folder helper
+
+Browsers cannot reveal absolute local paths. If you want a native folder picker that sends only the selected path to the backend, use the helper:
+
+```bash
+python helper/send_folder_path.py
+```
+
+It opens a native folder dialog and POSTs the absolute path to:
+
+```
+http://localhost:8000/api/folder-path
+```
+
+To change the endpoint:
+
+```bash
+FOLDER_HELPER_ENDPOINT=http://localhost:8000/api/folder-path python helper/send_folder_path.py
+```
 
 ## Storage layout
 
@@ -68,6 +89,10 @@ data/kbs/<kb_name>/
 - `GEMINI_CLI_CMD_JSON`: Gemini CLI JSON command (default `gemini -o json`)
 - `GEMINI_CLI_CMD_STREAM`: Gemini CLI streaming JSON command (default `gemini -o stream-json`)
 - `GEMINI_TIMEOUT`: Gemini timeout seconds (default `180`)
+
+## WSL path helper
+
+If you run the backend in WSL but browse on Windows, use the WSL path helper button to convert a Windows path like `C:\\Users\\you\\Docs` to `/mnt/c/Users/you/Docs` for the Source path field.
 
 ## Tips
 

@@ -37,6 +37,28 @@ export async function createKB(payload) {
   return res.json();
 }
 
+export async function createKBUpload({ name, embeddingModel, chunkSize, chunkOverlap, topK, files }) {
+  const formData = new FormData();
+  formData.append("name", name);
+  formData.append("embedding_model", embeddingModel);
+  formData.append("chunk_size", String(chunkSize));
+  formData.append("chunk_overlap", String(chunkOverlap));
+  formData.append("top_k", String(topK));
+  files.forEach((file) => {
+    formData.append("files", file, file.webkitRelativePath || file.name);
+  });
+
+  const res = await fetch(`${API_BASE}/api/kbs/upload`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Upload failed");
+  }
+  return res.json();
+}
+
 export async function ingestKB(name, sourcePath) {
   const res = await fetch(`${API_BASE}/api/kbs/${name}/ingest`, {
     method: "POST",
@@ -86,6 +108,15 @@ export async function deleteEmbeddingModel(modelId) {
   await fetch(`${API_BASE}/api/embeddings/models/${encodeURIComponent(modelId)}`, {
     method: "DELETE",
   });
+}
+
+export async function pickFolder() {
+  const res = await fetch(`${API_BASE}/api/pick-folder`, { method: "POST" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Folder picker failed");
+  }
+  return res.json();
 }
 
 export async function sendChat({
