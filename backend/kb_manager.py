@@ -2,7 +2,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Callable
 
 import numpy as np
 
@@ -110,11 +110,12 @@ def ingest(
     chunk_size: int,
     chunk_overlap: int,
     top_k: int,
+    progress_cb: Callable[[Dict[str, Any]], None] | None = None,
 ) -> Dict[str, Any]:
     os.makedirs(settings.kbs_dir, exist_ok=True)
     kb_dir = _kb_dir(name)
     if os.path.exists(kb_dir):
-        raise FileExistsError("Knowledge base already exists")
+        raise FileExistsError(f"Knowledge base already exists on disk: {kb_dir}")
     os.makedirs(kb_dir, exist_ok=True)
 
     meta = {
@@ -129,7 +130,15 @@ def ingest(
         "chunk_count": 0,
     }
 
-    stats = ingest_into(name, source_path, embedding_model, chunk_size, chunk_overlap, top_k)
+    stats = ingest_into(
+        name,
+        source_path,
+        embedding_model,
+        chunk_size,
+        chunk_overlap,
+        top_k,
+        progress_cb=progress_cb,
+    )
     meta.update(stats["meta"])
     save_kb(meta)
     return {"meta": meta, **stats["stats"]}
@@ -142,6 +151,7 @@ def ingest_into(
     chunk_size: int,
     chunk_overlap: int,
     top_k: int,
+    progress_cb: Callable[[Dict[str, Any]], None] | None = None,
 ) -> Dict[str, Any]:
     kb_dir = _kb_dir(name)
     paths = _store_paths(kb_dir)
@@ -153,7 +163,20 @@ def ingest_into(
     chunks_total = 0
     skipped = []
 
-    for file_path in iter_paths(source_path):
+    all_paths = [
+        file_path
+        for file_path in iter_paths(source_path)
+        if os.path.splitext(file_path)[1].lower() in SUPPORTED_EXTENSIONS
+    ]
+    total_files = len(all_paths)
+    if progress_cb:
+        progress_cb({
+            "stage": "scanning",
+            "total_files": total_files,
+            "message": f"Found {total_files} files",
+        })
+
+    for file_path in all_paths:
         ext = os.path.splitext(file_path)[1].lower()
         if ext not in SUPPORTED_EXTENSIONS:
             continue
@@ -178,6 +201,13 @@ def ingest_into(
         store.add(vectors, records)
         processed += 1
         chunks_total += len(chunks)
+        if progress_cb:
+            progress_cb({
+                "stage": "embedding",
+                "processed_files": processed,
+                "chunks": chunks_total,
+                "message": f"Embedded {os.path.basename(file_path)}",
+            })
 
     existing_docs = 0
     existing_chunks = 0

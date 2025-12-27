@@ -45,6 +45,7 @@ Open `http://localhost:5173`.
 4) **Provider**: choose Codex or Gemini; the provider is saved per conversation.
 5) **Dual mode**: enable Dual to chat with both providers side-by-side (separate histories).
 6) **Knowledge Bases**: rename, rebuild, or add more documents anytime.
+7) **Progress**: KB ingest and embedding downloads show live status updates.
 
 ## Local folder helper
 
@@ -84,6 +85,7 @@ data/kbs/<kb_name>/
 - `RAG_DB_PATH`: SQLite path (default `./data/app.db`)
 - `RAG_KBS_DIR`: KB folder (default `./data/kbs`)
 - `RAG_EMBEDDINGS_DIR`: embeddings cache (default `./data/embeddings`)
+- `EMBEDDING_DEVICE`: `cpu` or `cuda` (default `cpu`)
 - `CODEX_CLI_CMD`: Codex CLI command (default `codex exec --json --skip-git-repo-check -`)
 - `CODEX_TIMEOUT`: Codex timeout seconds (default `180`)
 - `GEMINI_CLI_CMD_JSON`: Gemini CLI JSON command (default `gemini -o json`)

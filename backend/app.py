@@ -2,6 +2,7 @@ import os
 import json
 import time
 import shutil
+import threading
 from typing import List, Dict, Any, Generator
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
@@ -20,12 +21,13 @@ from .history import (
     ensure_title,
     set_provider,
 )
-from .embeddings import list_models, register_model, delete_model
+from .embeddings import list_models, register_model, delete_model, register_model_with_progress
 from .kb_manager import list_kbs, ingest, ingest_into, delete_kb, rename_kb, rebuild, get_kb
 from .kb_manager import save_kb
 from .retrieval import retrieve, build_context
 from .llm_codex import run_codex, stream_codex, CodexError
 from .llm_gemini import run_gemini, stream_gemini, GeminiError
+from .progress import progress_store
 
 
 app = FastAPI()
@@ -74,6 +76,10 @@ class KBRename(BaseModel):
 class EmbeddingCreate(BaseModel):
     model_id: str
     tag: str | None = None
+
+
+class SettingsUpdate(BaseModel):
+    embedding_device: str
 
 
 class FolderPathRequest(BaseModel):
@@ -150,6 +156,46 @@ def api_add_model(req: EmbeddingCreate):
     return info.__dict__
 
 
+@app.get("/api/settings")
+def api_get_settings():
+    return {"embedding_device": settings.embedding_device}
+
+
+@app.post("/api/settings")
+def api_update_settings(req: SettingsUpdate):
+    if req.embedding_device not in {"cpu", "cuda"}:
+        raise HTTPException(status_code=400, detail="embedding_device must be cpu or cuda")
+    settings.embedding_device = req.embedding_device
+    from .embeddings import set_device_override
+    set_device_override(req.embedding_device)
+    return {"embedding_device": settings.embedding_device}
+
+
+@app.post("/api/embeddings/models/jobs")
+def api_add_model_job(req: EmbeddingCreate):
+    job_id = progress_store.create("embedding")
+
+    def _progress(update: Dict[str, Any]) -> None:
+        progress_store.update(job_id, **update)
+        message = update.get("message")
+        if message:
+            progress_store.append_log(job_id, f"{update.get('stage', '')}: {message}".strip(": "))
+
+    def _worker() -> None:
+        try:
+            register_model_with_progress(
+                req.model_id,
+                req.tag,
+                _progress,
+            )
+            progress_store.finish(job_id)
+        except Exception as exc:
+            progress_store.fail(job_id, str(exc))
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {"job_id": job_id}
+
+
 @app.delete("/api/embeddings/models/{model_id:path}")
 def api_delete_model(model_id: str):
     delete_model(model_id)
@@ -179,6 +225,44 @@ def api_create_kb(req: KBCreate):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/kbs/jobs")
+def api_create_kb_job(req: KBCreate):
+    if not os.path.exists(req.source_path):
+        raise HTTPException(status_code=400, detail="source path does not exist")
+    job_id = progress_store.create("kb_ingest")
+
+    def _progress(update: Dict[str, Any]) -> None:
+        progress_store.update(job_id, **update)
+        message = update.get("message")
+        if message:
+            progress_store.append_log(job_id, f"{update.get('stage', '')}: {message}".strip(": "))
+
+    def _worker() -> None:
+        try:
+            result = ingest(
+                req.name,
+                req.source_path,
+                req.embedding_model,
+                req.chunk_size,
+                req.chunk_overlap,
+                req.top_k,
+                progress_cb=_progress,
+            )
+            progress_store.update(
+                job_id,
+                message="Ingest complete",
+                processed_files=result.get("processed_files", 0),
+                chunks=result.get("chunks", 0),
+            )
+            progress_store.append_log(job_id, "done: ingest complete")
+            progress_store.finish(job_id)
+        except Exception as exc:
+            progress_store.fail(job_id, str(exc))
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {"job_id": job_id}
+
+
 @app.post("/api/kbs/upload")
 async def api_create_kb_upload(
     name: str = Form(...),
@@ -202,6 +286,9 @@ async def api_create_kb_upload(
             f.write(await upload.read())
 
     try:
+        job_id = progress_store.create("kb_ingest")
+        progress_store.update(job_id, stage="upload", total_files=len(files))
+        progress_store.append_log(job_id, f"upload: received {len(files)} files")
         result = ingest(
             name,
             upload_root,
@@ -209,10 +296,46 @@ async def api_create_kb_upload(
             chunk_size,
             chunk_overlap,
             top_k,
+            progress_cb=_progress,
         )
+        progress_store.update(
+            job_id,
+            message="Ingest complete",
+            processed_files=result.get("processed_files", 0),
+            chunks=result.get("chunks", 0),
+        )
+        progress_store.append_log(job_id, "done: ingest complete")
+        progress_store.finish(job_id)
         return result
     except (ValueError, FileExistsError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/jobs/{job_id}")
+def api_get_job(job_id: str):
+    job = progress_store.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
+
+
+@app.get("/api/jobs/{job_id}/stream")
+def api_stream_job(job_id: str):
+    def _stream():
+        last_sent = None
+        while True:
+            job = progress_store.get(job_id)
+            if not job:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'job not found'})}\\n\\n"
+                break
+            payload = {**job, "type": "progress"}
+            if payload != last_sent:
+                yield f"data: {json.dumps(payload)}\\n\\n"
+                last_sent = payload
+            if job.get("status") in {"finished", "failed"}:
+                break
+            time.sleep(0.5)
+    return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
 @app.post("/api/kbs/{kb_name}/ingest")

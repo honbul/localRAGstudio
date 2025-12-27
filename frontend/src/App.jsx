@@ -13,8 +13,13 @@ import {
   renameKB,
   deleteKB,
   listEmbeddingModels,
-  addEmbeddingModel,
+  getSettings,
+  updateSettings,
   deleteEmbeddingModel,
+  startEmbeddingJob,
+  startKBJob,
+  streamJob,
+  getJob,
   sendChat,
   createKBUpload,
 } from "./api.js";
@@ -62,17 +67,53 @@ export default function App() {
     top_k: 5,
   });
   const [kbStatus, setKbStatus] = useState("");
+  const [kbProgress, setKbProgress] = useState(null);
+  const [kbJobRunning, setKbJobRunning] = useState(false);
+  const [kbJobId, setKbJobId] = useState(null);
   const [kbFiles, setKbFiles] = useState([]);
 
   const [embeddingModels, setEmbeddingModels] = useState([]);
   const [modelForm, setModelForm] = useState({ model_id: "", tag: "" });
   const [modelStatus, setModelStatus] = useState("");
+  const [modelProgress, setModelProgress] = useState(null);
+  const [embeddingDevice, setEmbeddingDevice] = useState("cpu");
 
   useEffect(() => {
     refreshConversations();
     refreshKBs();
     refreshEmbeddingModels();
+    refreshSettings();
   }, []);
+
+  useEffect(() => {
+    if (page === "kbs") {
+      refreshKBs();
+    }
+  }, [page]);
+
+  useEffect(() => {
+    if (!kbJobRunning || !kbJobId) return;
+    const interval = setInterval(async () => {
+      try {
+        const snapshot = await getJob(kbJobId);
+        setKbProgress(snapshot);
+        if (snapshot.status === "failed") {
+          setKbStatus(snapshot.error || "Ingest failed");
+          setKbJobRunning(false);
+        }
+        if (snapshot.status === "finished") {
+          setKbStatus(
+            `Processed ${snapshot.processed_files || 0} files, ${snapshot.chunks || 0} chunks`
+          );
+          refreshKBs();
+          setKbJobRunning(false);
+        }
+      } catch (err) {
+        setKbStatus(err.message || "Failed to fetch job status");
+      }
+    }, 1500);
+    return () => clearInterval(interval);
+  }, [kbJobRunning, kbJobId]);
 
   useEffect(() => {
     const convo = activeConversations.gemini;
@@ -148,6 +189,13 @@ export default function App() {
     setEmbeddingModels(data.models || []);
     if (!kbForm.embedding_model && data.models && data.models.length) {
       setKbForm((prev) => ({ ...prev, embedding_model: data.models[0].model_id }));
+    }
+  }
+
+  async function refreshSettings() {
+    const data = await getSettings();
+    if (data.embedding_device) {
+      setEmbeddingDevice(data.embedding_device);
     }
   }
 
@@ -292,15 +340,17 @@ export default function App() {
 
   async function handleCreateKB(event) {
     event.preventDefault();
-    setKbStatus("Ingesting...");
+    setKbStatus("Starting...");
+    setKbProgress(null);
+    setKbJobRunning(true);
     try {
       if (!kbFiles.length && !kbForm.source_path.trim()) {
         setKbStatus("Provide a source path or select a folder.");
+        setKbJobRunning(false);
         return;
       }
-      let result;
       if (kbFiles.length) {
-        result = await createKBUpload({
+        const result = await createKBUpload({
           name: kbForm.name,
           embeddingModel: kbForm.embedding_model,
           chunkSize: kbForm.chunk_size,
@@ -308,10 +358,47 @@ export default function App() {
           topK: kbForm.top_k,
           files: kbFiles,
         });
+        setKbStatus(`Processed ${result.processed_files} files, ${result.chunks} chunks`);
+        refreshKBs();
+        setKbJobRunning(false);
       } else {
-        result = await createKB(kbForm);
+        const job = await startKBJob(kbForm);
+        setKbJobId(job.job_id);
+        try {
+          const snapshot = await getJob(job.job_id);
+          setKbProgress(snapshot);
+          if (snapshot.status === "failed") {
+            setKbStatus(snapshot.error || "Ingest failed");
+            setKbJobRunning(false);
+            return;
+          }
+          if (snapshot.status === "finished") {
+            setKbStatus(
+              `Processed ${snapshot.processed_files || 0} files, ${snapshot.chunks || 0} chunks`
+            );
+            refreshKBs();
+            setKbJobRunning(false);
+            return;
+          }
+        } catch (err) {
+          setKbStatus(err.message || "Failed to fetch job status");
+        }
+        streamJob(job.job_id, (data) => {
+          setKbProgress(data);
+          if (data.status === "failed") {
+            setKbStatus(data.error || "Ingest failed");
+            setKbJobRunning(false);
+          }
+          if (data.status === "finished") {
+            setKbStatus(
+              `Processed ${data.processed_files || 0} files, ${data.chunks || 0} chunks`
+            );
+            refreshKBs();
+            setKbJobRunning(false);
+          }
+        });
+        setKbFiles([]);
       }
-      setKbStatus(`Processed ${result.processed_files} files, ${result.chunks} chunks`);
       setKbForm({
         name: "",
         source_path: "",
@@ -321,7 +408,6 @@ export default function App() {
         top_k: 5,
       });
       setKbFiles([]);
-      refreshKBs();
     } catch (err) {
       setKbStatus(err.message || "Failed to ingest");
     }
@@ -329,12 +415,21 @@ export default function App() {
 
   async function handleAddModel(event) {
     event.preventDefault();
-    setModelStatus("Downloading...");
+    setModelStatus("Starting...");
+    setModelProgress(null);
     try {
-      await addEmbeddingModel(modelForm);
-      setModelStatus("Model added");
+      const job = await startEmbeddingJob(modelForm);
+      streamJob(job.job_id, (data) => {
+        setModelProgress(data);
+        if (data.status === "failed") {
+          setModelStatus(data.error || "Model download failed");
+        }
+        if (data.status === "finished") {
+          setModelStatus("Model added");
+          refreshEmbeddingModels();
+        }
+      });
       setModelForm({ model_id: "", tag: "" });
-      refreshEmbeddingModels();
     } catch (err) {
       setModelStatus(err.message || "Failed to add model");
     }
@@ -614,7 +709,14 @@ export default function App() {
                 <h2>Knowledge Bases</h2>
                 <p>Manage existing knowledge bases.</p>
               </div>
-              <button className="ghost" onClick={refreshKBs}>Refresh</button>
+              <button
+                className="ghost"
+                onClick={() => {
+                  refreshKBs();
+                }}
+              >
+                Refresh
+              </button>
             </header>
             <div className="card-grid">
               {kbs.map((kb) => (
@@ -775,9 +877,29 @@ export default function App() {
                   />
                 </label>
               </div>
-              <button type="submit">Build Knowledge Base</button>
+              <button type="submit" disabled={kbJobRunning}>
+                {kbJobRunning ? "Building..." : "Build Knowledge Base"}
+              </button>
             </form>
             {kbStatus && <div className="status">{kbStatus}</div>}
+            {kbProgress && (
+              <div className="status">
+                Stage: {kbProgress.stage} · Files: {kbProgress.processed_files || 0}/
+                {kbProgress.total_files || 0} · Chunks: {kbProgress.chunks || 0}
+              </div>
+            )}
+            {kbProgress && kbProgress.logs && kbProgress.logs.length ? (
+              <div className="log-panel">
+                {kbProgress.logs.slice(-10).map((entry) => (
+                  <div key={entry.ts} className="log-line">
+                    {entry.message}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {kbProgress && kbProgress.status === "failed" && kbProgress.error ? (
+              <div className="status">Error: {kbProgress.error}</div>
+            ) : null}
           </section>
         )}
 
@@ -790,6 +912,26 @@ export default function App() {
               </div>
               <button className="ghost" onClick={refreshEmbeddingModels}>Refresh</button>
             </header>
+            <div className="settings-row">
+              <label>
+                Embedding device
+                <select
+                  value={embeddingDevice}
+                  onChange={async (event) => {
+                    const value = event.target.value;
+                    setEmbeddingDevice(value);
+                    try {
+                      await updateSettings({ embedding_device: value });
+                    } catch (err) {
+                      setModelStatus(err.message || "Failed to update device");
+                    }
+                  }}
+                >
+                  <option value="cpu">CPU</option>
+                  <option value="cuda">CUDA</option>
+                </select>
+              </label>
+            </div>
             <div className="card-grid">
               {embeddingModels.map((model) => (
                 <div key={model.model_id} className="card">
@@ -831,6 +973,20 @@ export default function App() {
               </label>
               <button type="submit">Download Model</button>
               {modelStatus && <div className="status">{modelStatus}</div>}
+              {modelProgress && (
+                <div className="status">
+                  Stage: {modelProgress.stage} {modelProgress.message || ""}
+                </div>
+              )}
+              {modelProgress && modelProgress.logs && modelProgress.logs.length ? (
+                <div className="log-panel">
+                  {modelProgress.logs.slice(-8).map((entry) => (
+                    <div key={entry.ts} className="log-line">
+                      {entry.message}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </form>
           </section>
         )}

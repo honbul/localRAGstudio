@@ -9,6 +9,8 @@ from sentence_transformers import SentenceTransformer
 
 from .settings import settings
 
+_device_override: str | None = None
+
 
 @dataclass
 class EmbeddingModelInfo:
@@ -86,6 +88,24 @@ def register_model(model_id: str, tag: str | None = None) -> EmbeddingModelInfo:
     )
 
 
+def register_model_with_progress(
+    model_id: str,
+    tag: str | None,
+    progress_cb,
+) -> EmbeddingModelInfo:
+    if progress_cb:
+        progress_cb({"stage": "downloading", "message": "Downloading model files"})
+    info = register_model(model_id, tag)
+    if progress_cb:
+        progress_cb({
+            "stage": "ready",
+            "message": "Model ready",
+            "dimension": info.dimension,
+            "size_mb": info.size_mb,
+        })
+    return info
+
+
 def delete_model(model_id: str) -> None:
     registry = _load_registry()
     info = registry.get(model_id)
@@ -101,4 +121,13 @@ def get_embedder(model_id: str) -> SentenceTransformer:
     info = registry.get(model_id)
     if not info:
         raise ValueError("Embedding model not registered")
-    return SentenceTransformer(model_id, cache_folder=info["path"])
+    device = _device_override or settings.embedding_device
+    return SentenceTransformer(
+        model_id,
+        cache_folder=info["path"],
+        device=device,
+    )
+def set_device_override(device: str | None) -> None:
+    global _device_override
+    _device_override = device
+    get_embedder.cache_clear()

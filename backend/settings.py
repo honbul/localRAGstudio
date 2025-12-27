@@ -8,6 +8,7 @@ class Settings:
     db_path: str = os.environ.get("RAG_DB_PATH", "./data/app.db")
     kbs_dir: str = os.environ.get("RAG_KBS_DIR", "./data/kbs")
     embeddings_dir: str = os.environ.get("RAG_EMBEDDINGS_DIR", "./data/embeddings")
+    embedding_device: str = os.environ.get("EMBEDDING_DEVICE", "cpu")
 
     codex_cmd: str = os.environ.get(
         "CODEX_CLI_CMD",

@@ -37,6 +37,19 @@ export async function createKB(payload) {
   return res.json();
 }
 
+export async function startKBJob(payload) {
+  const res = await fetch(`${API_BASE}/api/kbs/jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to start KB job");
+  }
+  return res.json();
+}
+
 export async function createKBUpload({ name, embeddingModel, chunkSize, chunkOverlap, topK, files }) {
   const formData = new FormData();
   formData.append("name", name);
@@ -95,12 +108,43 @@ export async function listEmbeddingModels() {
   return res.json();
 }
 
+export async function getSettings() {
+  const res = await fetch(`${API_BASE}/api/settings`);
+  return res.json();
+}
+
+export async function updateSettings(payload) {
+  const res = await fetch(`${API_BASE}/api/settings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to update settings");
+  }
+  return res.json();
+}
+
 export async function addEmbeddingModel(payload) {
   const res = await fetch(`${API_BASE}/api/embeddings/models`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+  return res.json();
+}
+
+export async function startEmbeddingJob(payload) {
+  const res = await fetch(`${API_BASE}/api/embeddings/models/jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to start embedding job");
+  }
   return res.json();
 }
 
@@ -115,6 +159,31 @@ export async function pickFolder() {
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Folder picker failed");
+  }
+  return res.json();
+}
+
+export function streamJob(jobId, onUpdate) {
+  const es = new EventSource(`${API_BASE}/api/jobs/${jobId}/stream`);
+  es.onmessage = (event) => {
+    if (!event.data) return;
+    const data = JSON.parse(event.data);
+    onUpdate(data, es);
+    if (data.status === "finished" || data.status === "failed") {
+      es.close();
+    }
+  };
+  es.onerror = () => {
+    es.close();
+  };
+  return es;
+}
+
+export async function getJob(jobId) {
+  const res = await fetch(`${API_BASE}/api/jobs/${jobId}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to fetch job");
   }
   return res.json();
 }
