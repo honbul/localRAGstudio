@@ -193,11 +193,37 @@ def ingest_into(
         vectors = embedder.encode(chunks, normalize_embeddings=False)
         vectors = np.array(vectors, dtype=np.float32)
         records = []
+        if "pages" in meta:
+            for idx, page_info in enumerate(meta["pages"]):
+                page_text = page_info.get("text", "")
+                page_chunks = chunk_text(page_text, chunk_size, chunk_overlap)
+                if not page_chunks:
+                    continue
+                page_vectors = embedder.encode(page_chunks, normalize_embeddings=False)
+                page_vectors = np.array(page_vectors, dtype=np.float32)
+                page_records = []
+                for c_idx, chunk in enumerate(page_chunks):
+                    page_records.append(
+                        VectorRecord(
+                            text=chunk,
+                            source=file_path,
+                            chunk_id=c_idx,
+                            page=page_info.get("page"),
+                        )
+                    )
+                store.add(page_vectors, page_records)
+                chunks_total += len(page_chunks)
+                if progress_cb:
+                    progress_cb({
+                        "stage": "embedding",
+                        "processed_files": processed,
+                        "chunks": chunks_total,
+                        "message": f"Embedded {os.path.basename(file_path)} page {page_info.get('page')}",
+                    })
+            continue
+        records = []
         for idx, chunk in enumerate(chunks):
-            page = None
-            if "pages" in meta:
-                page = meta["pages"][0]["page"] if meta["pages"] else None
-            records.append(VectorRecord(text=chunk, source=file_path, chunk_id=idx, page=page))
+            records.append(VectorRecord(text=chunk, source=file_path, chunk_id=idx))
         store.add(vectors, records)
         processed += 1
         chunks_total += len(chunks)

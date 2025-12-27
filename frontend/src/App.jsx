@@ -174,6 +174,18 @@ export default function App() {
     return { __html: DOMPurify.sanitize(html) };
   };
 
+  const formatScore = (score) => {
+    if (score === undefined || score === null) return "";
+    return Number(score).toFixed(3);
+  };
+
+  const formatSnippet = (text) => {
+    if (!text) return "";
+    const cleaned = text.replace(/\s+/g, " ").trim();
+    if (cleaned.length <= 280) return cleaned;
+    return `${cleaned.slice(0, 280)}…`;
+  };
+
   async function refreshConversations() {
     const data = await listConversations();
     setConversations(data.conversations || []);
@@ -643,7 +655,17 @@ export default function App() {
                           <div className="citations">
                             {msg.sources.slice(0, 5).map((source, idx) => (
                               <div key={idx} className="citation">
-                                {source.source} · chunk {source.chunk_id}
+                                <span className="citation-label">
+                                  {source.source}
+                                  {source.page ? ` · page ${source.page}` : ` · chunk ${source.chunk_id}`}
+                                  {source.score !== undefined && source.score !== null
+                                    ? ` · score ${formatScore(source.score)}`
+                                    : ""}
+                                </span>
+                                <div className="citation-tooltip">
+                                  <div className="tooltip-title">Excerpt</div>
+                                  <div className="tooltip-text">{formatSnippet(source.text)}</div>
+                                </div>
                               </div>
                             ))}
                           </div>

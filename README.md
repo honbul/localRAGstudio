@@ -41,7 +41,7 @@ Open `http://localhost:5173`.
 
 1) **Embedding Models**: add a model like `sentence-transformers/all-MiniLM-L6-v2`.
 2) **Create KB**: choose a local path or upload a folder, set chunking + top-k.
-3) **Chat**: select one or more KBs to ground answers (or chat with none).
+3) **Chat**: select one or more KBs to ground answers (or chat with none). Citations include relevance scores.
 4) **Provider**: choose Codex or Gemini; the provider is saved per conversation.
 5) **Dual mode**: enable Dual to chat with both providers side-by-side (separate histories).
 6) **Knowledge Bases**: rename, rebuild, or add more documents anytime.
