@@ -835,14 +835,14 @@ export default function App() {
                     "Paste a Windows path to convert (e.g. C:\\\\Users\\\\you\\\\Docs)"
                   );
                   if (!input) return;
-                  const trimmed = input.trim();
-                  const match = trimmed.match(/^([A-Za-z]):\\\\(.*)$/);
+                  const trimmed = input.trim().replace(/^["']|["']$/g, "");
+                  const match = trimmed.match(/^([A-Za-z]):[\\/](.*)$/);
                   if (!match) {
                     setKbStatus("Invalid Windows path.");
                     return;
                   }
                   const drive = match[1].toLowerCase();
-                  const rest = match[2].replace(/\\\\/g, "/");
+                  const rest = match[2].replace(/[\\]+/g, "/");
                   const wslPath = `/mnt/${drive}/${rest}`;
                   setKbForm((prev) => ({ ...prev, source_path: wslPath }));
                   setKbStatus(`WSL path: ${wslPath}`);
