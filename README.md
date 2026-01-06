@@ -107,3 +107,7 @@ If you run the backend in WSL but browse on Windows, use the WSL path helper but
 - `.doc` is not supported; convert to `.docx` or `.pdf`.
 - If Codex reports session permission issues: `sudo chown -R $(whoami) ~/.codex`.
 - Gemini CLI prints startup logs before JSON; the backend ignores those automatically.
+
+## Update log
+
+- 2025-12-23: Dual provider chat, citation tooltips, relevance scores, and progress monitoring.
